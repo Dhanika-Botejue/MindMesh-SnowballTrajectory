@@ -9,15 +9,17 @@ CLASS_LEFT_START = 2
 CLASS_RIGHT_END = 4
 CLASS_RIGHT_START = 5
 
-# --- Equirectangular (Insta360) trajectory physics ---
-# Insta360 video exports as equirectangular: horizontal pixels map to azimuth
-# phi in [-pi, pi], vertical pixels map to elevation theta in [pi/2, -pi/2].
-# A real-world straight-line throw becomes a curve in this projection, so we
-# simulate in angular space and reproject the curve back to pixels.
-GRAVITY_RAD_PER_S2 = 1.0          # angular gravity; tune until arc matches reality
-GROUND_PIXEL_Y_FRAC = 0.92        # treat this fraction down the frame as "ground"
-RELEASE_VELOCITY_GAIN = 1.2       # peak release speed ~ this * windup-to-release average
-LAUNCH_ELEVATION_BOOST = 0.2      # rad/s upward kick added to v_theta at release
+# --- 3D world-space trajectory physics for an Insta360 equirectangular video ---
+# Camera at the origin looking along +z; +x is right, +y is up. Hand pixel
+# positions are lifted onto a sphere of radius ASSUMED_THROW_DISTANCE_M, the
+# 3D throw velocity is (release - windup)/dt, and the resulting trajectory is
+# integrated with real gravity in m/s^2 and reprojected back to pixels at each
+# timestep. This avoids the "constant angular velocity" bug that made forward
+# throws sweep across the entire equirectangular frame.
+ASSUMED_THROW_DISTANCE_M = 0.5    # meters from camera to thrower's hand
+CAMERA_HEIGHT_M = 1.5             # ground sits at y = -CAMERA_HEIGHT_M
+GRAVITY_M_PER_S2 = 9.81
+RELEASE_VELOCITY_GAIN = 7.0       # peak release speed vs avg windup-to-release motion
 TRAJ_STEP_S = 1.0 / 60.0          # simulation step size
 TRAJ_MAX_S = 4.0                  # cap simulation length
 
@@ -33,65 +35,77 @@ def box_center(xyxy):
     return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
 
 
-def pixel_to_angles(px, py, w, h):
+def pixel_to_unit_ray(px, py, w, h):
+    """Equirectangular pixel -> unit direction vector in camera coords.
+    Conventions: +x right, +y up, +z forward (image center column)."""
     phi = (px / w) * 2 * math.pi - math.pi
     theta = math.pi / 2 - (py / h) * math.pi
-    return phi, theta
+    return (math.cos(theta) * math.sin(phi),
+            math.sin(theta),
+            math.cos(theta) * math.cos(phi))
 
 
-def angles_to_pixel(phi, theta, w, h):
+def world_to_pixel(x, y, z, w, h):
+    """3D world point -> equirectangular pixel."""
+    n = math.sqrt(x * x + y * y + z * z)
+    if n < 1e-9:
+        return (w / 2.0, h / 2.0)
+    nx, ny, nz = x / n, y / n, z / n
+    phi = math.atan2(nx, nz)
+    theta = math.asin(max(-1.0, min(1.0, ny)))
     px = (phi + math.pi) / (2 * math.pi) * w
     py = (math.pi / 2 - theta) / math.pi * h
-    return px, py
+    return (px, py)
 
 
 def simulate_trajectory(start_pos, release_pos, dt, w, h):
-    """Simulate the throw in angular space and return (polyline, speed, angle).
-    Polyline is a list of pixel points from release to predicted landing."""
+    """Lift the hand pixel positions onto a sphere of radius
+    ASSUMED_THROW_DISTANCE_M, integrate the throw in 3D with real gravity,
+    and reproject the curve back to equirectangular pixels at each step."""
     if dt <= 0:
         return None
     sx, sy = start_pos
     ex, ey = release_pos
-    s_phi, s_theta = pixel_to_angles(sx, sy, w, h)
-    e_phi, e_theta = pixel_to_angles(ex, ey, w, h)
 
-    v_phi = (e_phi - s_phi) / dt        # rad/s azimuth
-    v_theta = (e_theta - s_theta) / dt  # rad/s elevation
+    R = ASSUMED_THROW_DISTANCE_M
+    sd = pixel_to_unit_ray(sx, sy, w, h)
+    ed = pixel_to_unit_ray(ex, ey, w, h)
+    p_start = (R * sd[0], R * sd[1], R * sd[2])
+    p_release = (R * ed[0], R * ed[1], R * ed[2])
 
-    # Peak release velocity is well above the average windup-to-release velocity,
-    # and a typical throw launches slightly upward even when the arm motion is
-    # roughly horizontal. Apply a multiplicative gain plus an additive elevation
-    # boost so the simulation actually sails forward instead of immediately
-    # diving into the ground.
-    v_phi *= RELEASE_VELOCITY_GAIN
-    v_theta = v_theta * RELEASE_VELOCITY_GAIN + LAUNCH_ELEVATION_BOOST
+    g = GRAVITY_M_PER_S2
+    vx = (p_release[0] - p_start[0]) / dt * RELEASE_VELOCITY_GAIN
+    vy = (p_release[1] - p_start[1]) / dt * RELEASE_VELOCITY_GAIN
+    vz = (p_release[2] - p_start[2]) / dt * RELEASE_VELOCITY_GAIN
 
-    _, ground_theta = pixel_to_angles(0, GROUND_PIXEL_Y_FRAC * h, w, h)
-
+    ground_y = -CAMERA_HEIGHT_M
     points = [(int(ex), int(ey))]
-    prev_theta = e_theta
+    prev_y = p_release[1]
     t = 0.0
     while t < TRAJ_MAX_S:
         t += TRAJ_STEP_S
-        theta_t = e_theta + v_theta * t - 0.5 * GRAVITY_RAD_PER_S2 * t * t
-        phi_t = e_phi + v_phi * t
+        x_t = p_release[0] + vx * t
+        y_t = p_release[1] + vy * t - 0.5 * g * t * t
+        z_t = p_release[2] + vz * t
 
-        if theta_t <= ground_theta:
-            denom = prev_theta - theta_t
-            frac = (prev_theta - ground_theta) / denom if abs(denom) > 1e-9 else 1.0
+        if y_t <= ground_y:
+            denom = prev_y - y_t
+            frac = (prev_y - ground_y) / denom if abs(denom) > 1e-9 else 1.0
             t_hit = (t - TRAJ_STEP_S) + frac * TRAJ_STEP_S
-            phi_hit = e_phi + v_phi * t_hit
-            px, py = angles_to_pixel(phi_hit, ground_theta, w, h)
+            x_hit = p_release[0] + vx * t_hit
+            z_hit = p_release[2] + vz * t_hit
+            px, py = world_to_pixel(x_hit, ground_y, z_hit, w, h)
             points.append((int(px), int(py)))
             break
 
-        px, py = angles_to_pixel(phi_t, theta_t, w, h)
+        px, py = world_to_pixel(x_t, y_t, z_t, w, h)
         points.append((int(px), int(py)))
-        prev_theta = theta_t
+        prev_y = y_t
 
-    speed_rad = math.hypot(v_phi, v_theta)
-    angle_deg = math.degrees(math.atan2(-v_theta, v_phi))
-    return points, speed_rad, angle_deg
+    speed = math.sqrt(vx * vx + vy * vy + vz * vz)
+    horizontal = math.sqrt(vx * vx + vz * vz)
+    angle_deg = math.degrees(math.atan2(vy, horizontal)) if horizontal > 1e-9 else 90.0
+    return points, speed, angle_deg
 
 
 class ThrowState:
@@ -150,7 +164,7 @@ def preprocess(model, source, fps):
                         polyline, speed, angle = sim
                         print(
                             f"  throw {hand}: dt={dt:.2f}s  "
-                            f"speed={speed:.2f}rad/s  angle={angle:.0f}deg  "
+                            f"speed={speed:.2f}m/s  angle={angle:.0f}deg  "
                             f"points={len(polyline)}  landing={polyline[-1]}"
                         )
                         events.append({
@@ -218,7 +232,7 @@ def render(frame, idx, total, events):
                        (255, 255, 255), 2)
             cv2.circle(out, landing, LANDING_DOT_RADIUS, (0, 0, 255), -1)
             tag = "LAND (off-frame)" if off_frame else f"{ev['hand']} LAND"
-            label = (f"{tag}  w={ev['speed']:.2f}rad/s  "
+            label = (f"{tag}  v={ev['speed']:.1f}m/s  "
                      f"a={int(ev['angle'])}deg")
             cv2.putText(
                 out, label,
