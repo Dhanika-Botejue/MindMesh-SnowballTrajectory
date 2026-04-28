@@ -17,9 +17,9 @@ CLASS_LEFT_START = 2
 CLASS_RIGHT_END = 4
 CLASS_RIGHT_START = 5
 
-# Mac inference settings (CPU; smaller imgsz to avoid OOM/crashes).
-INFER_DEVICE = "cpu"
-INFER_IMGSZ = 416
+# Windows / RTX inference settings.
+INFER_DEVICE = 0
+INFER_IMGSZ = 640
 
 # --- 3D world-space trajectory physics for an Insta360 equirectangular video ---
 ASSUMED_THROW_DISTANCE_M = 0.5
@@ -79,9 +79,6 @@ def simulate_trajectory(start_pos, release_pos, dt, w, h):
     vy = (p_release[1] - p_start[1]) / dt * RELEASE_VELOCITY_GAIN
     vz = (p_release[2] - p_start[2]) / dt * RELEASE_VELOCITY_GAIN
 
-    # Real throws launch with upward loft; arm-swing tangent motion alone
-    # gives near-flat vy and the ball dives too quickly. Add upward velocity
-    # proportional to horizontal speed.
     horizontal_v = math.sqrt(vx * vx + vz * vz)
     vy += horizontal_v * math.tan(math.radians(LAUNCH_ANGLE_BOOST_DEG))
 
@@ -121,11 +118,11 @@ class ThrowState:
         self.start_frame = None
 
 
-def preprocess(model, source, fps, frame_w, frame_h):
-    """Run YOLO inference once. Cache only per-frame detections (tiny) and
-    throw events. Annotated frames are NOT cached — they're redrawn on demand
-    in render() to avoid blowing out RAM on high-res 360 footage."""
-    detections = []
+def preprocess(model, source, fps):
+    """Cache `r.plot()` output per frame. On Windows / RTX the GPU pipeline
+    and typically more system RAM make this practical; on Mac use the
+    on-demand reader in test_model.py instead."""
+    cached = []
     events = []
     states = {"left": ThrowState(), "right": ThrowState()}
 
@@ -139,16 +136,14 @@ def preprocess(model, source, fps, frame_w, frame_h):
     )
 
     for frame_idx, r in enumerate(results):
+        annotated = r.plot()
+        h, w = annotated.shape[:2]
+
+        best = {}
         if r.boxes is not None and len(r.boxes) > 0:
             xyxy = r.boxes.xyxy.cpu().numpy()
             cls_arr = r.boxes.cls.cpu().numpy().astype(int)
             conf_arr = r.boxes.conf.cpu().numpy()
-        else:
-            xyxy, cls_arr, conf_arr = None, None, None
-        detections.append((xyxy, cls_arr, conf_arr))
-
-        best = {}
-        if xyxy is not None:
             for box, cls, conf in zip(xyxy, cls_arr, conf_arr):
                 if cls not in best or conf > best[cls][1]:
                     best[cls] = (box, conf)
@@ -168,9 +163,7 @@ def preprocess(model, source, fps, frame_w, frame_h):
                     release = box_center(best[end_id][0])
                     dt = (frame_idx - st.start_frame) / fps
                     windup = (int(st.start_pos[0]), int(st.start_pos[1]))
-                    sim = simulate_trajectory(
-                        st.start_pos, release, dt, frame_w, frame_h
-                    )
+                    sim = simulate_trajectory(st.start_pos, release, dt, w, h)
                     if sim is not None:
                         polyline, speed, angle = sim
                         print(
@@ -197,10 +190,11 @@ def preprocess(model, source, fps, frame_w, frame_h):
                 st.start_pos = None
                 st.start_frame = None
 
+        cached.append(annotated)
         if (frame_idx + 1) % 10 == 0:
             print(f"  processed {frame_idx + 1} frames")
 
-    return detections, events
+    return cached, events
 
 
 def draw_polyline_safe(img, points, color, thickness, w):
@@ -214,23 +208,9 @@ def clamp_point(p, w, h, margin):
             max(margin, min(h - margin - 1, int(p[1]))))
 
 
-def draw_detections(img, detection):
-    """Manually redraw YOLO boxes from cached detection data."""
-    xyxy, cls_arr, conf_arr = detection
-    if xyxy is None:
-        return
-    for box, cls, conf in zip(xyxy, cls_arr, conf_arr):
-        x1, y1, x2, y2 = (int(box[0]), int(box[1]), int(box[2]), int(box[3]))
-        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 255), 2)
-        label = f"{CLASS_NAMES.get(int(cls), str(int(cls)))} {conf:.2f}"
-        cv2.putText(img, label, (x1, max(y1 - 6, 14)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-
-
-def render(frame, idx, total, events, detection):
+def render(frame, idx, total, events):
     out = frame.copy()
     h, w = out.shape[:2]
-    draw_detections(out, detection)
     for ev in events:
         if ev["start"] <= idx <= ev["end"]:
             draw_polyline_safe(
@@ -263,54 +243,27 @@ def render(frame, idx, total, events, detection):
     return out
 
 
-class FrameReader:
-    """On-demand frame reader. Seeks via CAP_PROP_POS_FRAMES; fast on mp4
-    with proper indexing and avoids holding every frame in RAM."""
-    def __init__(self, source):
-        self.cap = cv2.VideoCapture(source)
-        self.last_idx = -1
-
-    def get(self, idx):
-        if idx != self.last_idx + 1:
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-        ok, frame = self.cap.read()
-        if not ok:
-            return None
-        self.last_idx = idx
-        return frame
-
-    def release(self):
-        self.cap.release()
-
-
 def main():
     model = YOLO("runs/detect/hand-throw2/HandV2/weights/best.pt")
     source = "snowball-3second-360.mp4"
 
     probe = cv2.VideoCapture(source)
     fps = probe.get(cv2.CAP_PROP_FPS) or 30.0
-    total = int(probe.get(cv2.CAP_PROP_FRAME_COUNT))
-    frame_w = int(probe.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_h = int(probe.get(cv2.CAP_PROP_FRAME_HEIGHT))
     probe.release()
 
     print("Preprocessing video (running inference on every frame)...")
-    detections, events = preprocess(model, source, fps, frame_w, frame_h)
-    total = len(detections) if detections else total
-    print(f"Done. {total} frames, {len(events)} throw event(s) detected.")
+    cached, events = preprocess(model, source, fps)
+    total = len(cached)
+    print(f"Done. {total} frames cached, {len(events)} throw event(s) detected.")
     print("Controls: 2 = next, 1 = previous, q = quit.")
 
     window_name = "Snowball Trajectory - Frame Stepper"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window_name, 800, 600)
 
-    reader = FrameReader(source)
     idx = 0
     while True:
-        frame = reader.get(idx)
-        if frame is None:
-            break
-        cv2.imshow(window_name, render(frame, idx, total, events, detections[idx]))
+        cv2.imshow(window_name, render(cached[idx], idx, total, events))
         key = cv2.waitKey(0) & 0xFF
         if key == ord('q'):
             break
@@ -319,7 +272,6 @@ def main():
         elif key == ord('1'):
             idx = max(idx - 1, 0)
 
-    reader.release()
     cv2.destroyAllWindows()
 
 
