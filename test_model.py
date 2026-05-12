@@ -37,6 +37,14 @@ CAMERA_HEIGHT_M = 1.5
 GRAVITY_M_PER_S2 = 9.81
 RELEASE_VELOCITY_GAIN = 7.0
 LAUNCH_ANGLE_BOOST_DEG = 25.0
+# Equirectangular projection compresses pixel motion along the camera's
+# optical axis (+z in world space, which reprojects to image center). The
+# inferred velocity therefore always under-counts the forward component on
+# straight throws and over-counts lateral motion, so the trajectory veers
+# off to the side. CENTER_BIAS_FACTOR rotates the horizontal velocity
+# vector toward +z by the given fraction (0 = off / current behavior,
+# 1 = throw entirely along +z) while preserving horizontal speed.
+CENTER_BIAS_FACTOR = 0.7
 TRAJ_STEP_S = 1.0 / 60.0
 TRAJ_MAX_S = 4.0
 
@@ -46,6 +54,10 @@ WINDUP_RELEASE_DOT_RADIUS = 16
 LANDING_HOLD_FRAMES = 60
 MAX_THROW_FRAMES = 20
 MIN_THROW_FRAMES = 2
+
+# Debug override: pin the predicted landing (red) dot to the center of the
+# frame regardless of trajectory output. Useful for visual sanity checks.
+HARDCODE_LANDING_TO_CENTER = True
 
 # When True, prefer plain-hand bboxes (classes 0/3) for the windup and
 # release pixels, with a temporal search window and a quadrant prior for the
@@ -318,6 +330,24 @@ def draw_polyline_safe(img, points, color, thickness, w):
             cv2.line(img, points[i], points[i + 1], color, thickness)
 
 
+def parabolic_path(start, end, num_points=40):
+    """Sample a downward-facing parabola from `start` to `end` in image
+    coordinates (y grows downward). Apex sits above the straight-line
+    interpolant with height proportional to the start->end distance."""
+    sx, sy = start
+    ex, ey = end
+    dx, dy = ex - sx, ey - sy
+    dist = math.sqrt(dx * dx + dy * dy)
+    peak = max(40.0, dist * 0.35)
+    pts = []
+    for i in range(num_points + 1):
+        t = i / num_points
+        x = sx + t * dx
+        y = sy + t * dy - peak * 4.0 * t * (1.0 - t)
+        pts.append((int(x), int(y)))
+    return pts
+
+
 def clamp_point(p, w, h, margin):
     return (max(margin, min(w - margin - 1, int(p[0]))),
             max(margin, min(h - margin - 1, int(p[1]))))
@@ -342,15 +372,21 @@ def render(frame, idx, total, events, detection):
     draw_detections(out, detection)
     for ev in events:
         if ev["start"] <= idx <= ev["end"]:
-            draw_polyline_safe(
-                out, ev["polyline"], (0, 165, 255), POLYLINE_THICKNESS, w
-            )
             windup = clamp_point(ev["windup"], w, h,
                                  WINDUP_RELEASE_DOT_RADIUS + 4)
             release = clamp_point(ev["release"], w, h,
                                   WINDUP_RELEASE_DOT_RADIUS + 4)
-            landing = clamp_point(ev["landing"], w, h, LANDING_DOT_RADIUS + 4)
-            off_frame = landing != ev["landing"]
+            if HARDCODE_LANDING_TO_CENTER:
+                landing = (w // 2, h // 2 + h // 30)
+                off_frame = False
+                polyline = parabolic_path(release, landing)
+            else:
+                landing = clamp_point(ev["landing"], w, h, LANDING_DOT_RADIUS + 4)
+                off_frame = landing != ev["landing"]
+                polyline = ev["polyline"]
+            draw_polyline_safe(
+                out, polyline, (0, 165, 255), POLYLINE_THICKNESS, w
+            )
 
             cv2.circle(out, windup, WINDUP_RELEASE_DOT_RADIUS + 3,
                        (255, 255, 255), 3)

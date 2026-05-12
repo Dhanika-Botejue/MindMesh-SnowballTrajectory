@@ -1,4 +1,10 @@
-hand-throw-dataset/
+hand-throw/test/
+hand-throw/train/
+hand-throw/valid/
+hand-throw2/test/
+hand-throw2/train/
+hand-throw2/valid/
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
