@@ -1,6 +1,6 @@
-# MindMesh-SnowballTrajectory
+# Snowball Trajectory Prediction
 
-**Predict where a thrown snowball will land from Insta360 video, using hand and arm throw trajectory calculation.**
+**Predict where a snowball will land from Insta360 video showing hand and arm throw movement.**
 
 ![demo](model-demo.gif)
 
