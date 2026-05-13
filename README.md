@@ -6,9 +6,9 @@
 
 ## Approach
 
-A YOLOv8 detector trained on 500+ hand-annotated frames (expanded to ~1000 images after Roboflow augmentations) recognizes six functional classes per frame: `left/right hand` (just the hand), `left/right arm - windup` (the whole arm at the start of a throw, shoulder→hand), and `left/right arm - finish throw` (the whole arm at release). The shipped weights file `runs/detect/hand-throw2/HandV2/weights/best.pt` actually carries `nc=8` - indices 3 and 7 are stray legacy slots from an earlier training run that are ignored at runtime, so the right-side throw classes live at 4/5/6 rather than 3/4/5. `CLASS_NAMES` in `test_model.py` patches the names in the loaded model so labels render correctly.
+A YOLOv8 detector trained on 500+ hand-annotated frames (expanded to ~1000 images after Roboflow augmentations) recognizes six functional classes per frame: `left/right hand` (just the hand), `left/right arm - windup` (the whole arm at the start of a throw, shoulder→hand), and `left/right arm - finish throw` (the whole arm at release). 
 
-The trajectory pipeline runs on top of that detector as a two-pass process - an inference pass that builds per-frame detections and a list of raw throw events, followed by a resolution pass that turns each raw event into precise windup/release pixels and integrates a trajectory:
+The trajectory pipeline runs on top of the detector as a two-pass process. An inference pass that builds per-frame detections and a list of raw throw events, followed by a resolution pass that turns each raw event into precise windup/release pixels and integrates a trajectory:
 
 1. **Per-hand state machine (inference pass)** - for each hand (left, right), the first `arm - windup` detection locks in the windup arm bbox and frame index; the next `arm - finish throw` detection on the same side is treated as the release and a raw event is emitted. A windup that never resolves into a finish-throw is dropped after `MAX_THROW_FRAMES` and start→end pairs closer than `MIN_THROW_FRAMES` are rejected. Arm classes drive *timing* only - they decide when the throw starts and ends.
 2. **Two-signal pixel resolution (resolution pass)** - the windup and release **pixels** are sourced from the plain-hand classes (`0 = left hand`, `4 = right hand`), not from the arm bbox centers. For each raw event:
