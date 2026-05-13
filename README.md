@@ -1,6 +1,6 @@
 # Snowball Trajectory Prediction
 
-**Predict where a snowball will land from Insta360 video showing hand and arm throw movement.**
+**Predict snowball trajectorty and landing from Insta360 video that shows hand and arm throwing movement.**
 
 ![demo](model-demo.gif)
 
