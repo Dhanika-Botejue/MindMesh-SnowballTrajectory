@@ -1,0 +1,10 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+# 8 classes match the layout baked into the existing best.pt (nc=8). Indices
+# 3 ("left right") and 7 ("right throw") are leftovers from an earlier
+# Roboflow run; they are kept as no-op slots so retraining preserves the
+# index mapping the runtime code already uses (CLASS_RIGHT_HAND=4, etc.).
+nc: 8
+names: ['left hand', 'left arm - finish throw', 'left arm - windup', 'left right', 'right hand', 'right arm - finish throw', 'right arm - windup', 'right throw']
