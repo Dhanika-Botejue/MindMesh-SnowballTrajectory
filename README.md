@@ -6,7 +6,7 @@
 
 ## Approach
 
-A YOLOv8 detector trained on 500+ annotated frames recognizes six functional classes per frame: `left/right hand` (just the hand), `left/right arm - windup` (the whole arm at the start of a throw, shoulder→hand), and `left/right arm - finish throw` (the whole arm at release). The shipped weights file `runs/detect/hand-throw2/HandV2/weights/best.pt` actually carries `nc=8` - indices 3 and 7 are stray legacy slots from an earlier training run that are ignored at runtime, so the right-side throw classes live at 4/5/6 rather than 3/4/5. `CLASS_NAMES` in `test_model.py` patches the names in the loaded model so labels render correctly.
+A YOLOv8 detector trained on 500+ hand-annotated frames (expanded to ~1000 images after Roboflow augmentations) recognizes six functional classes per frame: `left/right hand` (just the hand), `left/right arm - windup` (the whole arm at the start of a throw, shoulder→hand), and `left/right arm - finish throw` (the whole arm at release). The shipped weights file `runs/detect/hand-throw2/HandV2/weights/best.pt` actually carries `nc=8` - indices 3 and 7 are stray legacy slots from an earlier training run that are ignored at runtime, so the right-side throw classes live at 4/5/6 rather than 3/4/5. `CLASS_NAMES` in `test_model.py` patches the names in the loaded model so labels render correctly.
 
 The trajectory pipeline runs on top of that detector as a two-pass process - an inference pass that builds per-frame detections and a list of raw throw events, followed by a resolution pass that turns each raw event into precise windup/release pixels and integrates a trajectory:
 
@@ -47,9 +47,13 @@ The viewer pre-runs inference over the whole clip, then drops into a frame-by-fr
 - `STEP_THROUGH_MODE` - manual stepper vs. autoplay.
 - `INFER_DEVICE` / `INFER_IMGSZ` - `"cpu"` / `416` on macOS to avoid OOM; `0` (CUDA) / `640` on Windows for full-res inference.
 
+## Dataset
+
+The training set lives on Roboflow Universe: **[hand-throw v2](https://universe.roboflow.com/dhanika-botejue-s-workspace/hand-throw/dataset/2)**. 500+ hand-annotated frames from the Insta360 footage, expanded to ~1000 images with augmentations (flips, brightness/contrast jitter, etc.). Download in YOLOv8 format and point `train.py` at it to reproduce the weights in `runs/detect/hand-throw2/HandV2/weights/best.pt`.
+
 ## Results
 
-- Trained YOLOv8n on 500+ annotated frames, evaluated on a held-out validation split - the detector reliably localizes both hands and fires `arm - windup` / `arm - finish throw` events at the correct moments in real-world outdoor footage.
+- Trained YOLOv8n on 500+ hand-annotated frames (~1000 images post-augmentation), evaluated on a held-out validation split - the detector reliably localizes both hands and fires `arm - windup` / `arm - finish throw` events at the correct moments in real-world outdoor footage.
 - The full detect → equirectangular-unprojection → 3D-projectile pipeline runs frame-by-frame on RTX 3060 Ti hardware at real-time playback rates; the macOS frame stepper preprocesses the clip on CPU and then advances at user-controlled pace.
 - Predicted landing dot tracks observed snowball impact points across multiple test throws after one-time calibration of `ASSUMED_THROW_DISTANCE_M`, `RELEASE_VELOCITY_GAIN`, `LAUNCH_ANGLE_BOOST_DEG`, and `CAMERA_HEIGHT_M`.
 
