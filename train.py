@@ -1,11 +1,11 @@
 from ultralytics import YOLO
 
 def main():
-    # 1. Load the base model
+    # Load the base model
     # We use 'n' (nano) for the highest speed during your snowball throw
     model = YOLO("yolov8n.pt") 
 
-    # 2. Start Training
+    # Start Training
     model.train(
         data="hand-throw2/data.yaml",      # Path to your dataset config
         epochs=50,             # Number of passes through the data
