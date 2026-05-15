@@ -2,10 +2,12 @@
 
 **Predict snowball trajectory and landing from Insta360 video that shows hand and arm throwing movement.**
 
-<p align="left">
-  <img src="model-demo.gif" alt="demo" height="320" />
-  <img src="model-demo-image.png" alt="demo still" height="320" />
-</p>
+<table>
+  <tr>
+    <td><img src="model-demo.gif" alt="demo" width="400" /></td>
+    <td><img src="model-demo-image.png" alt="demo still" width="400" /></td>
+  </tr>
+</table>
 
 ## Approach
 
